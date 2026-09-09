@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+/* "Modernist" design tokens, ported exactly from the real design system's
+   styles.css (previously only had the mockup's markup and variable names —
+   now the actual source of truth). Square corners throughout (never use
+   rounded-* except rounded-none on native controls that need it overridden);
+   2px dividers read as structural rules, not decoration. */
+@theme inline {
+  --color-bg: #f3f2f2;
+  --color-surface: #eae9e9;
+  --color-text: #201e1d;
+  /* v2 density redesign: accent narrows to "needs you" — 03 — DO NEXT kickers/
+     rules, stale/never-run states, unset criteria, primary actions. Value and
+     the whole tint ramp below regenerated from the real prototype (its one
+     defined hover stop, #7d1d0d, anchors the dark end; the light end reuses
+     the old ramp's mix-to-white ratios) — see design/.../CHANGE_ORDER_v2.md. */
+  --color-accent: #b02a13;
+  --color-divider: color-mix(in srgb, #201e1d 40%, transparent);
+
+  /* v2: "captured material" — 01 — CAPTURED kickers/rules, tinted surfaces
+     holding raw/captured content, connection counts, the ★ marker. Values are
+     the prototype's own literals (it defines no ramp for this color, just a
+     base + two fixed-opacity tints). */
+  --color-cool: #1c3d5a;
+  /* Opaque, not translucent — this fills whole card faces (via Card's
+     "captured" tone) that can sit directly on CardGrid's own divider-colored
+     container. A low-alpha rgba here lets that dark divider bleed through
+     the entire card instead of just its intended 2px gap, so this is
+     composited against the page's own background ahead of time. */
+  --color-cool-tint: color-mix(in srgb, #1c3d5a 4.5%, #f3f2f2 95.5%);
+  --color-cool-rule: rgba(28, 61, 90, 0.14);
+
+  --color-neutral-100: #f8f4f4;
+  --color-neutral-200: #eae7e7;
+  --color-neutral-300: #d7d3d3;
+  --color-neutral-400: #bab6b6;
+  --color-neutral-500: #9b9797;
+  --color-neutral-600: #7d7979;
+  --color-neutral-700: #605d5d;
+  --color-neutral-800: #444141;
+  --color-neutral-900: #2d2b2b;
+
+  --color-accent-100: #fcf6f5;
+  --color-accent-200: #f7e9e6;
+  --color-accent-300: #f0d5d1;
+  --color-accent-400: #e4b6ae;
+  --color-accent-500: #d48a7e;
+  --color-accent-600: #7d1d0d;
+  --color-accent-700: #571409;
+  --color-accent-800: #3c0e06;
+  --color-accent-900: #2a0a04;
+
+  --font-heading: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, Menlo, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+  font-weight: 400;
+}
+
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+
+@keyframes rsPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+@keyframes rsBar {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}

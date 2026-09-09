@@ -1,0 +1,57 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# vercel
+.vercel
+
+# app data: uploaded profile screenshots + sqlite db — personal research data, never committed
+/data/
+/dev.db
+/dev.db-journal
+
+# design handoff: real personal data (LinkedIn export, real captured-profile
+# content baked into the prototype HTML) — reference material only, never committed.
+# Named explicitly, not by *.dc.html glob — the wireframes file is the same
+# extension but is mock data throughout and is meant to ship (see README).
+design/**/prototype/connections.json
+design/**/prototype/Reverse Search.dc.html
+design/**/prototype/Reverse Search v2.dc.html
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+/generated

@@ -1,0 +1,394 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Singleton row (application always reads/writes the first row).
+// Structured profile data lives in dataJson — see lib/types.ts for the shape.
+// SQLite has no native JSON/array columns, so nested data is stored as JSON text.
+model CandidateProfile {
+  id        Int      @id @default(autoincrement())
+  name      String
+  headline  String?
+  dataJson  String
+  updatedAt DateTime @updatedAt
+}
+
+// One row per source material ingested into the candidate profile
+// (resume, LinkedIn export, cover letter, other). Mirrors AI-Job-Search's
+// documents/ folder concept — kept for traceability and re-parsing.
+model CandidateDocument {
+  id            Int      @id @default(autoincrement())
+  fileType      String // cv | linkedin | cover_letter | other
+  fileName      String
+  filePath      String
+  extractedJson String
+  ingestedAt    DateTime @default(now())
+}
+
+// An active "project" the user is researching. Only companies explicitly
+// created or promoted from a Suggestion live here.
+model Company {
+  id            Int             @id @default(autoincrement())
+  slug          String          @unique
+  name          String
+  sector        String?
+  // The candidate's own history/context with this company, in their own
+  // words — seeded from a promoted suggestion's feedbackNote (if any), always
+  // editable afterward. Threaded into analyzeCompany/analyzeJobFit/
+  // generateInterviewGuide prompts when present.
+  researchNotes String?
+  // Soft-hide from the dashboard's companies table — never a delete. Set when
+  // the candidate dismisses a project row; cleared by the undo action.
+  dismissedAt   DateTime?
+  createdAt     DateTime        @default(now())
+  people        PersonProfile[]
+  analysisRuns  AnalysisRun[]
+  chatMessages  ChatMessage[]
+  jobPostings   JobPosting[]
+  apiCalls      ApiCall[]
+  interviews    Interview[]
+}
+
+// Raw mirror of job_search_tracker.csv rows, refreshed via re-import.
+// Reference pool for the suggestion engine; importing does not create Company rows.
+model TrackerCompany {
+  id              Int          @id @default(autoincrement())
+  name            String       @unique
+  sector          String?
+  role            String?
+  status          String?
+  notes           String?
+  // Parsed from whatever CSV column the mapping wizard assigns to "priority";
+  // null if unmapped, or if the mapped column's value didn't parse as a number.
+  priority        Int?
+  // Arbitrary columns the mapping wizard's "keep as extra field" policy retains,
+  // keyed by original CSV header — kept on the record but not analyzed.
+  extraFieldsJson String       @default("{}")
+  lastSeenAt      DateTime     @default(now())
+  suggestions     Suggestion[]
+}
+
+// One row per *person* captured at a company (not per image) — the
+// reconciled result of merging one or more ScreenshotImages.
+model PersonProfile {
+  id                     Int               @id @default(autoincrement())
+  companyId              Int
+  company                Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  // Best-effort — extracted when visible in the capture, same as the other
+  // merged fields below. Null when the screenshot didn't show it or was
+  // malformed; UI/prompts must fall back to title/headline, never invent one.
+  mergedName             String?
+  mergedTitle            String?
+  mergedHeadline         String?
+  mergedAbout            String?
+  mergedSkillsJson       String?
+  // Best-effort, month/year precision (day defaults to 1) — when they joined
+  // this company, even if since promoted within it. Parsed from extraction's
+  // free-text date via parseApproximateDate(). Captured now to let a future
+  // recency/tenure-of-hire analysis compare recent joiners against
+  // longer-tenured people once there's enough captured volume to justify it
+  // — not analyzed yet, this column is capture-only for now.
+  companyTenureStartDate DateTime?
+  // LinkedIn's own degree badge ("1st"/"2nd"/"3rd" — beyond 3rd shows no
+  // badge at all, so that's null too), free text, best-effort.
+  // Not a fit signal — feeds a sample-composition read (how much of a capture
+  // is the candidate's own network vs. genuinely further out).
+  connectionDegree       String?
+  // JSON array of company names from the rest of this person's experience
+  // (not this company). Compared against the candidate's own experience in
+  // code (normalizeCompanyName, same matching already used for connections)
+  // to flag a shared-employer overlap — a real rapport signal that's easy to
+  // miss reading About-text prose, independent of LinkedIn connection degree.
+  priorEmployersJson     String?
+  // Mutual-connections screenshot isn't part of a profile export — captured
+  // separately, per person, only when the candidate chooses to add it.
+  sharedConnectionsJson  String?
+  sharedConnectionsImage String?
+  // JSON array of floats — a Voyage AI embedding of title+headline+about+
+  // skills, computed lazily (only when the vector-map feature is toggled on
+  // in Admin) and cached here so it's not recomputed on every map view.
+  // Null until first computed; the map route backfills it on demand.
+  embeddingJson          String?
+  createdAt              DateTime          @default(now())
+  images                 ScreenshotImage[]
+  interviewRounds        InterviewRound[]
+}
+
+// One row per uploaded image, child of a PersonProfile. A profile whose
+// About section or skills list didn't fit one screenshot spans several of these,
+// uploaded together as a single "Add person" action.
+model ScreenshotImage {
+  id                Int           @id @default(autoincrement())
+  personProfileId   Int
+  personProfile     PersonProfile @relation(fields: [personProfileId], references: [id], onDelete: Cascade)
+  imagePath         String
+  rawExtractionJson String?
+  createdAt         DateTime      @default(now())
+}
+
+// One row per (re)run of "Analyze" for a company. Prior runs are kept,
+// not overwritten, so fit trend is visible as more people get added.
+model AnalysisRun {
+  id                     Int           @id @default(autoincrement())
+  companyId              Int
+  company                Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt              DateTime      @default(now())
+  personCountAtRun       Int
+  overallVerdict         String
+  overallScore           Int
+  overallSummary         String
+  confidenceNote         String        @default("")
+  suggestedQuestionsJson String        @default("[]")
+  clusters               RoleCluster[]
+}
+
+// A dynamically-labeled role group within one AnalysisRun.
+model RoleCluster {
+  id                         Int                  @id @default(autoincrement())
+  analysisRunId              Int
+  analysisRun                AnalysisRun          @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  clusterLabel               String
+  memberPersonProfileIdsJson String
+  aggregateSummary           String
+  fitScore                   Int
+  fitVerdict                 String
+  // Legacy single-blob reasoning, superseded by the alignment/divergence
+  // split below — kept nullable so pre-migration runs still render (the
+  // "pro" case only, no divergence card, since none was ever asked for).
+  fitReasoning               String?
+  alignmentReasoning         String?
+  divergenceReasoning        String?
+  associatedPostings         JobPostingAnalysis[]
+}
+
+// One chat thread per company.
+model ChatMessage {
+  id        Int      @id @default(autoincrement())
+  companyId Int
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role      String // user | assistant
+  content   String
+  createdAt DateTime @default(now())
+}
+
+// A job description imported against a company, for role-level fit analysis
+// (distinct from AnalysisRun, which is about the company's people in general).
+model JobPosting {
+  id                      Int                  @id @default(autoincrement())
+  companyId               Int
+  company                 Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  title                   String
+  rawText                 String
+  seniority               String
+  functionType            String
+  keyResponsibilitiesJson String
+  requiredExperienceJson  String
+  compensationRange       String?
+  applicationStatus       String? // free text: "rejected within hours", "applied", "not yet applied", etc.
+  createdAt               DateTime             @default(now())
+  analyses                JobPostingAnalysis[]
+  interviews              Interview[]
+}
+
+// One row per (re)run of role-fit + outreach analysis for a JobPosting.
+model JobPostingAnalysis {
+  id                          Int          @id @default(autoincrement())
+  jobPostingId                Int
+  jobPosting                  JobPosting   @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
+  createdAt                   DateTime     @default(now())
+  fitScore                    Int
+  // One standalone sentence, ~110 chars — names the specific mismatch, never
+  // hedges. Distinct from functionTypeAssessment below, which is the full
+  // prose read. Rendered on collapsed rows; the prose lives on the detail route.
+  verdict                     String       @default("")
+  functionTypeAssessment      String
+  // Which existing role cluster (if any) this posting best maps to, and how
+  // that was decided — resolved the same way outreachTargets' targetPersonId
+  // is: the model points at a cluster by index (or says there's none), the
+  // index is resolved to a real id post-hoc. onDelete: SetNull — deleting a
+  // cluster shouldn't destroy the posting's analysis, just unlink it.
+  associatedClusterId         Int?
+  associatedCluster           RoleCluster? @relation(fields: [associatedClusterId], references: [id], onDelete: SetNull)
+  associatedClusterBasis      String? // e.g. "scored against cluster" vs "function/title match"
+  positioningGapsJson         String
+  likelyRejectionReason       String
+  outreachTargetsJson         String
+  outreachMessagesJson        String
+  // A ready-to-send template for cold-emailing this role's actual hiring
+  // manager once the candidate identifies who that is themselves (outside
+  // this app) — uses a "[Hiring Manager Name]" placeholder rather than being
+  // grounded in a specific captured person, unlike outreachMessages above.
+  coldOutreachToHiringManager String       @default("")
+  // Staleness snapshot, same pattern as AnalysisRun.personCountAtRun: compared
+  // against live values to decide whether this plan needs a re-run.
+  personCountAtRun            Int          @default(0)
+  candidateProfileUpdatedAt   DateTime     @default(now())
+  resumeEditsJson             String       @default("[]")
+  skillsToAcquireJson         String       @default("[]")
+}
+
+// One interview "thread" at a company, loosely tied to the JobPosting it's
+// for. jobPostingId is optional — a thread can start (referral conversation,
+// recruiter reach-out) before a JD has been captured. onDelete: SetNull, not
+// Cascade — deleting the JobPosting shouldn't destroy interview history, the
+// opportunity just becomes unlinked. A company can have any number of these
+// over time (reapply, different req, a second pass a year later) — no cap.
+model Interview {
+  id           Int                @id @default(autoincrement())
+  companyId    Int
+  company      Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  jobPostingId Int?
+  jobPosting   JobPosting?        @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  label        String? // shown when jobPostingId is null; always editable
+  // Free text, same convention as JobPosting.applicationStatus (one column,
+  // UI suggests common values via placeholder). Null = still in progress.
+  disposition  String?
+  createdAt    DateTime           @default(now())
+  rounds       InterviewRound[]
+  events       OpportunityEvent[]
+}
+
+// One stage within an opportunity's sequence (recruiter screen, hiring
+// manager, peer panel, ...). Append-only — sequence is assigned server-side
+// as (current round count + 1) and never renumbered, which is what lets
+// "prior rounds" mean "rounds with sequence < this one" for compounding.
+model InterviewRound {
+  id                  Int                @id @default(autoincrement())
+  interviewId         Int
+  interview           Interview          @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  sequence            Int
+  stage               String // free text: "Recruiter screen", "Hiring manager", "Peer panel — 2 of 3"
+  // Scheduled/occurred date for this specific round — distinct from
+  // createdAt (when the row was added, which may be before the round is even
+  // scheduled). Null = not yet scheduled.
+  date                DateTime?
+  // Free text, UI-constrained to "Not scheduled" / "Scheduled" / "In
+  // progress" / "Complete" / "Passed over" — drives the timeline's dot
+  // weight (live/needs-action vs. history), same free-text-over-enum
+  // convention as disposition/applicationStatus above.
+  state               String?
+  // Always present even when interviewerPersonId is null (e.g. "TBD", "panel
+  // — names not shared yet") — same split as outreachTargets' targetType vs
+  // targetPersonId: a free-text label plus an optional resolved person.
+  interviewerName     String
+  interviewerPersonId Int?
+  interviewerPerson   PersonProfile?     @relation(fields: [interviewerPersonId], references: [id], onDelete: SetNull)
+  guideJson           String? // structured InterviewGuideSchema output, null until generated
+  guideGeneratedAt    DateTime?
+  notes               String? // free text, filled in after the round happens — the compounding mechanism
+  createdAt           DateTime           @default(now())
+  events              OpportunityEvent[]
+
+  @@index([interviewId])
+}
+
+// A thin timeline-index, not a duplicate of Interview/InterviewRound's rich
+// data — the Interviews tab's timeline reads this one table and joins back
+// to the richer models for display fields. type is free text ("round" |
+// "opened" | "contact"), same free-text-over-enum convention as above.
+model OpportunityEvent {
+  id          Int             @id @default(autoincrement())
+  interviewId Int
+  interview   Interview       @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  roundId     Int? // set only for type "round"
+  round       InterviewRound? @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  type        String
+  date        DateTime // sort key for the timeline; kept in sync with round.date when roundId is set
+  note        String? // the free-text body for "contact" events; unused for the others
+  createdAt   DateTime        @default(now())
+
+  @@index([interviewId])
+}
+
+// Output of the recommendation engine: a TrackerCompany worth investigating,
+// with reasoning grounded in already-analyzed companies' fit patterns.
+model Suggestion {
+  id               Int            @id @default(autoincrement())
+  trackerCompanyId Int
+  trackerCompany   TrackerCompany @relation(fields: [trackerCompanyId], references: [id], onDelete: Cascade)
+  reasoning        String
+  // One standalone sentence, ~110 chars — same calibration as the other
+  // verdict fields. Distinct from reasoning (the paragraph) and basedOnPattern
+  // (the provenance line).
+  verdict          String?
+  basedOnPattern   String
+  // 0-100, from the same LLM call that produces reasoning. Used to sort/tiebreak
+  // the DO NEXT strip when the user's ranking preference calls for it.
+  confidenceScore  Int?
+  status           String         @default("new") // new | dismissed | promoted
+  // The candidate's own note on this specific recommendation — independent of
+  // status, so it can be left regardless of whether the suggestion gets
+  // promoted, dismissed, or neither yet. Persists after dismiss so a future
+  // generateSuggestions() run can still read it as context.
+  feedbackNote     String?
+  createdAt        DateTime       @default(now())
+}
+
+// One row per Anthropic API call, logged right after each call resolves.
+// Powers the header spend figure and the Admin screen — never backfilled or
+// retroactively recomputed, so costUsd is a historical snapshot even if the
+// price constants in lib/anthropic.ts are corrected later.
+model ApiCall {
+  id                  Int      @id @default(autoincrement())
+  createdAt           DateTime @default(now())
+  activity            String // analyzeCompany | analyzeJobFit | importJobPosting |
+  // generateSuggestions | extractPerson | mergePerson | captureSharedConnections |
+  // candidateProfileExtract | candidateProfileChangeset | candidateProfileApply | chat
+  model               String
+  companyId           Int?
+  company             Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  jobPostingId        Int?
+  inputTokens         Int
+  outputTokens        Int
+  cacheReadTokens     Int      @default(0)
+  cacheCreationTokens Int      @default(0)
+  costUsd             Float
+  isRerun             Boolean  @default(false)
+
+  @@index([createdAt])
+  @@index([companyId])
+}
+
+// Singleton row (id always 1) for user-toggled runtime preferences that don't
+// belong in env vars because they're set from the UI, not at deploy time.
+model AppSettings {
+  id                        Int     @id @default(1)
+  trackerRankingStrategy    String  @default("priorityFitTiebreak") // priorityOnly | priorityFitTiebreak | fitOnly
+  trackerExtraColumnsPolicy String  @default("keepUnanalyzed") // keepUnanalyzed | foldIntoNotes | drop
+  // Remembers the last confirmed column mapping so a repeat import of the same
+  // tracker file can skip straight to review instead of re-guessing from scratch.
+  trackerLastPath           String?
+  trackerLastMappingJson    String?
+  // Days after which an analysis is too old to count as the dashboard's
+  // "strongest lead" — configurable rather than a literal per the design spec.
+  staleThresholdDays        Int     @default(30)
+  // Off by default. Gates the vector-map feature (Voyage AI embeddings +
+  // local PCA) at the API-route level — when false, captured profile text
+  // never gets sent to Voyage. Also requires VOYAGE_API_KEY to be set.
+  vectorMapEnabled          Boolean @default(false)
+}
+
+// A row from the candidate's own LinkedIn "Connections.csv" export — their
+// 1st-degree network, not scraped, manually exported and re-imported
+// whenever they want a refresh. Full-refresh on import (delete + reload),
+// same pattern as TrackerCompany — no merge logic needed.
+model Connection {
+  id          Int       @id @default(autoincrement())
+  name        String
+  company     String?
+  position    String?
+  url         String?
+  email       String?
+  connectedOn DateTime?
+  importedAt  DateTime  @default(now())
+
+  @@index([company])
+}
